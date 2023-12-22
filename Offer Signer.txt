@@ -1,0 +1,80 @@
+web3.currentProvider.sendAsync(
+  {
+    method: "net_version",
+    params: [],
+    jsonrpc: "2.0",
+  },
+  function (err, result) {
+    const netId = result.result;
+    console.log("netId", netId);
+    const msgParams = JSON.stringify({
+      types: {
+        EIP712Domain: [
+          { name: "name", type: "string" },
+          { name: "version", type: "string" },
+          { name: "chainId", type: "uint256" },
+          { name: "verifyingContract", type: "address" },
+        ],
+
+        ListedItem: [
+          { name: "offeredBy", type: "address" },
+          { name: "erc721", type: "address" },
+          { name: "tokenId", type: "uint256" },
+          { name: "price", type: "uint256" },
+          { name: "endTime", type: "uint256" },
+          { name: "collaboratorAddress", type: "address[]" },
+          { name: "collaboratorAmount", type: "uint256[]" },
+          { name: "collectionId", type: "string" },
+          { name: "tokenType", type: "uint256" },
+          { name: "uri", type: "string" },
+
+        ],
+      },
+      primaryType: "ListedItem",
+      domain: {
+        name: "Listing",
+        version: "1",
+        chainId: 11155111,
+        verifyingContract: "0x1C3FF64064cAd79c68B2D5635224bd9310aCE50a",
+      },
+      message: {
+        offeredBy: "0xeF07262CcC19E4321166C3df0cCD5999537e9EC5",
+        erc721: "0xFE4A8e5607827080a893061bDa3D2A5C43628F02",
+        tokenId: 1,
+        price: "18000000000000000000",
+        endTime: 1703849159,
+        collaboratorAddress: [
+          "0xB1580D5634e1C7514833974767d17801717ed715",
+          "0x2b7A551Cb3D70cdD128624E37168b4E6b7C9b09F",
+        ],
+        collaboratorAmount: ["1500000000000000000", "3000000000000000000"],
+        collectionId: "77a1",
+        tokenType: 0,
+        uri:"ipfs://QmXSQjaQLMmY9Mhgwsm4obiqLz1fNj21QGqmyqeo447WqV"
+      },
+    });
+
+    var from = "0xeF07262CcC19E4321166C3df0cCD5999537e9EC5";
+
+    console.log("CLICKED, SENDING PERSONAL SIGN REQ", "from", from, msgParams);
+    var params = [from, msgParams];
+    console.dir(params);
+    var method = "eth_signTypedData_v4";
+
+    web3.currentProvider.sendAsync(
+      {
+        method,
+        params,
+        from,
+      },
+      async function (err, result) {
+        if (err) return console.dir(err);
+        if (result.error) {
+          alert(result.error.message);
+        }
+        if (result.error) return console.error("ERROR", result);
+        console.log("SIGN: " + JSON.stringify(result.result));
+      }
+    );
+  }
+);

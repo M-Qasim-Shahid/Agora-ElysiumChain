@@ -1,0 +1,16 @@
+Updates on new contract
+
+bypass check added to pass the signatures verifications 
+
+
+Bulk buy function takes input array of strings but the sign will be taken as a conactenated string (IMP)
+
+
+three functions for cancel listing
+
+asset withdrawal functions addded
+
+all the functions of buy, bulkbuy, offer will get the input now as an object (struct)
+
+
+

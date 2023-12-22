@@ -1,0 +1,636 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.17;
+
+import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+
+
+// Interface to call ERC721 Functions
+contract ERC721 {
+    function safeMint(address to,string memory uri) external{}
+    function transferOwnership(address newOwner)external{}
+}
+
+// Contract for the NFT marketplace
+contract ElysiumMarket is ReentrancyGuard,Ownable { 
+    constructor(address _escrow){
+        escrow = _escrow;
+    }
+   
+    // Instance of the ERC721 contract (Our NFT Contract)
+    ERC721 public MintingContract;
+    address public escrow; //Owner of MarketPlace
+    address public signerWallet; 
+    address public currencyAddress; 
+    uint256 public listingPercent; 
+    bool public byPass = false;  // HIDE IT
+
+
+    
+   // Function to set the address of the ERC721 contract
+    function setMintingAddress(address _mintingAddress) external onlyOwner {
+        require(_mintingAddress != address(0), "Invalid ERC721 address");
+        MintingContract = ERC721(_mintingAddress);
+    }
+ 
+    // Transfer ownership back to another address
+    function transferERC721Ownership(address newOwner) external onlyOwner {
+         require(newOwner != address(0), "Invalid New Owner address");
+        MintingContract.transferOwnership(newOwner);
+    }
+
+
+    // Set BYPASS Check FOR SIGN VERIFICATIONS
+    function setByPass(bool pass) external onlyOwner {
+       byPass=pass;
+    }
+
+
+    // ASSET WITHDRAWAL FUNCTIONS
+    function withdrawEther(address payable recipient) external onlyOwner {
+        require(recipient != address(0), "Invalid recipient address");
+        recipient.transfer(address(this).balance);
+    }
+
+    function withdrawTokens(address tokenAddress, uint256 amount, address recipient) external onlyOwner {
+        require(recipient != address(0), "Invalid recipient address");
+
+        IERC20 token = IERC20(tokenAddress);
+        uint256 balance = token.balanceOf(address(this));
+        require(balance >= amount, "Insufficient token balance");
+        require(token.transfer(recipient, amount), "Token transfer failed");
+    }
+
+    function withdrawNFT(address nftAddress, uint256 tokenId, address recipient) external onlyOwner {
+        require(recipient != address(0), "Invalid recipient address");
+
+        IERC721 nft = IERC721(nftAddress);
+        require(nft.ownerOf(tokenId) == address(this), "NFT not owned by the contract");
+        nft.transferFrom(address(this), recipient, tokenId);
+    }
+
+    /**
+    * @notice Mapping to keep track of cancelled listings
+    * @dev A true value indicates that the listing has been cancelled or nft is sold
+    */
+    mapping(bytes => bool) public isCancelled; 
+    
+    // Structs for my functions
+    struct BuyItemParams {
+    address seller;
+    address erc721;
+    uint256 tokenId;
+    uint256 price;
+    uint256 endTime;
+    bytes[] signature;
+    address[] collaboratorAddress;
+    uint256[] collaboratorAmount;
+    string collectionId;
+    uint256 tokenType;
+    string uri;
+    }
+
+    struct OfferItemParams {
+    address offeredTo;
+    address offeredBy;
+    address erc721;
+    uint256 tokenId;
+    uint256 price;
+    uint256 endTime;
+    bytes[] signature;
+    address[] collaboratorAddress;
+    uint256[] collaboratorAmount;
+    string collectionId;
+    uint256 tokenType;
+    string uri;
+    }
+
+    struct BulkItemParams {
+    address seller;
+    address erc721;
+    uint256[] tokenId;
+    uint256 price;
+    uint256 endTime;
+    bytes[] signature;
+    address[] collaboratorAddress;
+    uint256[] collaboratorAmount;
+    string collectionId;
+    string[] uri; 
+    }
+ 
+    // Events
+        event Bought (
+        uint256 tokenId,
+        address buyer,
+        uint256 price,
+        string collectionId
+    );
+        event BulkBought (
+        uint256[] tokenId,
+        address buyer,
+        uint256 price,
+        string collectionId
+    );
+
+  // FUNCTIONS
+
+// Function to buy single nft
+   
+    function buy(
+        BuyItemParams memory params
+    ) 
+        external nonReentrant {
+     
+        require(isCancelled[params.signature[0]]== false, "This listing was cancelled");
+        require(block.timestamp < params.endTime,"Listing time has expired");
+        require(params.seller != msg.sender ,"Owner cannot buy his own NFT");
+        bytes32 eip712DomainHash = geteip712DomainHash ();
+        bytes32 hashStruct = gethashStruct(params.seller,params.erc721,params.tokenId,params.price,params.endTime,params.collaboratorAddress,params.collaboratorAmount,params.collectionId,params.tokenType,params.uri);
+        if(byPass == false){
+        require(verifySignature(params.signature[0],hashStruct,eip712DomainHash) == params.seller,"Seller signature not Verified");
+        require(verifySignature(params.signature[1],hashStruct,eip712DomainHash) == signerWallet,"System signature not Verified");
+        }
+        transferMoney(params.seller,params.price,currencyAddress,params.collaboratorAddress,params.collaboratorAmount);
+ 
+        if (params.tokenType == 0){
+        MintingContract.safeMint(msg.sender,params.uri);
+        }
+        else{
+           require(IERC721(params.erc721).ownerOf(params.tokenId)== params.seller,
+            "Seller is not the owner of this NFT"
+        );
+        IERC721(params.erc721).transferFrom(params.seller,msg.sender,params.tokenId);
+        }
+        
+        isCancelled[params.signature[0]]= true;
+        
+        emit Bought(
+        params.tokenId,
+        msg.sender,
+        params.price,
+        params.collectionId);
+
+    }
+
+
+// Function to buy bulk of nfts
+   
+      function bulkBuy(
+        BulkItemParams memory params
+    ) 
+        external nonReentrant {
+     
+        require(isCancelled[params.signature[0]]== false, "This listing was cancelled");
+        require(block.timestamp < params.endTime,"Listing time has expired");
+        require(params.seller != msg.sender ,"Owner cannot buy his own NFT");
+        bytes32 eip712DomainHash = geteip712DomainHash ();
+        bytes32 hashStruct = getBulkHashStruct(params.seller,params.erc721,params.tokenId,params.price,params.endTime,params.collaboratorAddress,params.collaboratorAmount,params.collectionId,params.uri);
+       
+       if (byPass == false){
+        require(verifySignature(params.signature[0],hashStruct,eip712DomainHash) == params.seller,"Seller signature not Verified");
+        require(verifySignature(params.signature[1],hashStruct,eip712DomainHash) == signerWallet,"System signature not Verified");
+       }
+        transferMoney(params.seller,params.price,currencyAddress,params.collaboratorAddress,params.collaboratorAmount);
+ 
+        for (uint i=0; i<params.uri.length; i++) {  
+            MintingContract.safeMint(msg.sender,params.uri[i]);
+             }
+
+        
+        for (uint i=0; i<params.tokenId.length; i++) {  
+        require(IERC721(params.erc721).ownerOf(params.tokenId[i])== params.seller,
+            "Seller is not the owner of this NFT"
+        );
+        IERC721(params.erc721).transferFrom(params.seller,msg.sender,params.tokenId[i]);
+             }
+        
+        
+        isCancelled[params.signature[0]]= true;
+        
+        emit BulkBought(
+        params.tokenId,  
+        msg.sender,
+        params.price,
+        params.collectionId);
+
+    }
+
+/**
+ * @notice Generates a unique hash struct for bulk NFT purchase to be used in signature verification
+ * @param seller The address of the NFT seller
+ * @param erc721 Contain the address of erc721 used for minting
+ * @param tokenId The array of NFT IDs being purchased
+ * @param price The total price of all NFTs in the specified ERC20 token
+ * @param endTime The timestamp indicating when the listing ends
+ * @param collaboratorAddress The addresses of collaborators who receive a portion of the payment
+ * @param collaboratorAmount The corresponding amounts to be sent to the collaborators
+ * @param collectionId The ID of the NFT collection or category
+ * @param uri The array of URIs corresponding to each NFT being purchased
+ * @return The keccak256 hash representing the bulk purchase parameters
+ * @dev The hash struct uniquely represents the bulk purchase, incorporating all relevant parameters
+ */
+
+       function getBulkHashStruct(
+        address seller,
+        address erc721,
+        uint256[] memory tokenId,
+        uint256 price,
+        uint256 endTime,
+        address[] memory collaboratorAddress,
+        uint256[] memory collaboratorAmount,
+        string memory collectionId,
+        string[] memory uri
+    ) public pure returns (bytes32) {
+
+        string memory concatenatedUri= concatenateStrings(uri);
+        return
+            keccak256(
+                abi.encode(
+                    keccak256('ListedItem(address seller,address erc721,uint256[] tokenId,uint256 price,uint256 endTime,address[] collaboratorAddress,uint256[] collaboratorAmount,string collectionId,string uri)'),
+                    seller,
+                    erc721,
+                    keccak256(abi.encodePacked(tokenId)),
+                    price,
+                    endTime,
+                    keccak256(abi.encodePacked(collaboratorAddress)),
+                    keccak256(abi.encodePacked(collaboratorAmount)),
+                    keccak256(bytes(collectionId)),
+                    keccak256(bytes(concatenatedUri))
+                )
+            );
+    } 
+
+
+
+/**
+ * @notice Concatenates an array of strings into a single string.
+ * @param stringsArray An array of strings to concatenate.
+ * @return The concatenated string, with individual strings separated by a comma.
+ * @dev This function takes an array of strings and concatenates them together into a single string.
+ *      Each individual string is separated by a comma. The resulting string is then returned.
+ */
+function concatenateStrings(string[] memory stringsArray) public pure returns (string memory) {
+    string memory result = "";
+
+    for (uint256 i = 0; i < stringsArray.length; i++) {
+        result = string(abi.encodePacked(result, stringsArray[i]));
+
+        if (i < stringsArray.length - 1) {
+            result = string(abi.encodePacked(result, ","));
+        }
+    }
+    return result;
+}
+
+
+
+/**
+ * @notice Transfers funds from the buyer to the seller and collaborators and market owner
+ * @param seller The address of the NFT seller
+ * @param price The total price of the NFT
+ * @param erc20 The address of the ERC20 contract used for payment
+ * @param collaboratorAddress The addresses of collaborators who receive a portion of the payment
+ * @param collaboratorAmount The corresponding amounts to be sent to the collaborators
+ */
+        function transferMoney ( address seller,uint256 price, address erc20 ,  address[] memory collaboratorAddress,
+        uint256[] memory collaboratorAmount)
+        private 
+    {   
+         uint256 fee = ((price*listingPercent)/100)/10;
+
+        uint256 totalColab=0;
+        for (uint i=0; i<collaboratorAddress.length; i++) {  
+             totalColab= totalColab + collaboratorAmount[i] ;
+             }
+
+
+        // Transfer to collaborators
+        for (uint i=0; i<collaboratorAddress.length; i++) {  
+        require(
+            IERC20(erc20).transferFrom(
+                msg.sender,  
+                collaboratorAddress[i], 
+                collaboratorAmount[i]   
+            ),
+            "Failed to transfer listing fee to Collaborators"
+        );
+           }
+
+        // Transfer to seller
+        require(
+            IERC20(erc20).transferFrom(
+                msg.sender,                  
+                seller,
+                price-fee-totalColab
+            ),
+            "Failed to transfer money to the seller"
+        );
+
+        // Listing fee from buyer to escrow
+        require(
+            IERC20(erc20).transferFrom(
+                msg.sender,  
+                escrow, 
+                fee
+            ),
+            "Failed to transfer listing fee to escrow"
+        );
+
+    }
+
+
+/**
+ * @notice Allows the owner to cancel a listing by its signature
+ * @param signature The signature of the listing to be cancelled
+ * @dev Updates the cancellation status of the listing to true
+ * @dev Reverts if the listing is already cancelled
+ */
+        function cancelSingleListing ( bytes memory signature) external nonReentrant{
+        require(isCancelled[signature]== false, "This listing was already cancelled");
+        isCancelled[signature] = true;
+    }
+
+/**
+ * @notice Allows the owner to cancel multiple listings by their signatures
+ * @param signature The array of signatures of the listings to be cancelled
+ * @dev Updates the cancellation status of each listing to true
+ * @dev Reverts if any of the listings are already cancelled
+ */
+        function cancelBulkListing ( bytes memory signature) external nonReentrant{
+        require(isCancelled[signature]== false, "This listing was already cancelled");
+        isCancelled[signature] = true;
+    }
+
+
+
+/**
+ * @notice Allows the owner to cancel multiple listings by their signatures
+ * @param signatures The array of signatures of the listings to be cancelled
+ * @dev Marks each listing as cancelled, preventing further purchases or offers
+ * @dev Reverts if any of the listings is already cancelled
+ * @dev Only the contract owner can call this function
+ */
+     // THEY NEED TO CHECK IF THE SELECTED SIGNATURES ARE ALREADY CANCELLED OR NOT 
+
+   function ownerCancelListing(bytes[] memory signatures) external onlyOwner {
+    for (uint256 i = 0; i < signatures.length; i++) {
+        require(!isCancelled[signatures[i]], "Listing was already cancelled");
+        isCancelled[signatures[i]] = true;
+    }
+}
+
+/**
+ * @notice Sets the percentage fee for listing or auction
+ * @param percentage The new listing fee percentage to be set
+ * @dev Only the contract owner can call this function
+ */
+     function setListingFee(uint256 percentage)external onlyOwner{
+         listingPercent=percentage;
+     }
+
+
+/**
+ * @notice Changes the address for the fee collection (escrow) account
+ * @param _newAddress The new address to set as the fee collection address
+ * @dev Only the contract owner can call this function
+ */
+     function changeFeeAddress(address _newAddress) external onlyOwner{
+         escrow = _newAddress;
+     }
+
+/**
+ * @notice Changes the address for the system signer account
+ * @param _newAddress The new address to set as the Signer address
+ * @dev Only the contract owner can call this function
+ */
+     function changeSignerWallet(address _newAddress) external onlyOwner{
+         signerWallet = _newAddress;
+     }
+
+/**
+ * @notice Changes the address for the system signer account
+ * @param _currencyAddress is the address of the currency in which the transactions are performed. (ERC-20)
+ * @dev Only the contract owner can call this function
+ */
+     function changeCurrencyAddress(address _currencyAddress) external onlyOwner{
+         currencyAddress = _currencyAddress;
+     }
+
+
+/**
+ * @notice Retrieves the EIP712 domain hash for signature verification
+ * @return The EIP712 domain hash
+ * @dev The EIP712 domain hash is calculated based on the contract's name, version, and verifying contract address
+ */
+    function geteip712DomainHash () public view  returns (bytes32) {
+        return
+        keccak256(
+        abi.encode(
+            keccak256(
+                "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
+            ),
+            keccak256(bytes("Listing")),
+            keccak256(bytes("1")),
+            11155111,
+            address(this)
+        )
+        );
+    }
+
+/**
+ * @notice Generates the hash struct used for signature verification
+ * @return The hash struct representing the listing parameters
+ */ 
+      function gethashStruct(
+        address seller,
+        address erc721,
+        uint256 tokenId,
+        uint256 price,
+        uint256 endTime,
+        address[] memory collaboratorAddress,
+        uint256[] memory collaboratorAmount,
+        string memory collectionId,
+        uint256 tokenType,
+        string memory uri
+    ) public pure returns (bytes32) {
+        return
+            keccak256(
+                abi.encode(
+                    keccak256('ListedItem(address seller,address erc721,uint256 tokenId,uint256 price,uint256 endTime,address[] collaboratorAddress,uint256[] collaboratorAmount,string collectionId,uint256 tokenType,string uri)'),
+                    seller,
+                    erc721,
+                    tokenId,
+                    price,
+                    endTime,
+                    keccak256(abi.encodePacked(collaboratorAddress)),
+                    keccak256(abi.encodePacked(collaboratorAmount)),
+                    keccak256(bytes(collectionId)),
+                    tokenType,
+                    keccak256(bytes(uri))
+                )
+            );
+    } 
+
+
+/**
+ * @notice Generates the hash struct used for signature verification
+ * @return The hash struct representing the listing parameters
+ */ 
+
+    function gethashStructOffer(
+        address offeredBy,
+        address erc721,
+        uint256 tokenId,
+        uint256 price,
+        uint256 endTime,
+        address[] memory collaboratorAddress,
+        uint256[] memory collaboratorAmount,
+        string memory collectionId,
+        uint256 tokenType,
+        string memory uri
+    ) public pure returns (bytes32) {
+        return
+            keccak256(
+                abi.encode(
+                    keccak256('ListedItem(address offeredBy,address erc721,uint256 tokenId,uint256 price,uint256 endTime,address[] collaboratorAddress,uint256[] collaboratorAmount,string collectionId,uint256 tokenType,string uri)'),
+                    offeredBy,
+                    erc721,
+                    tokenId,
+                    price,
+                    endTime,
+                    keccak256(abi.encodePacked(collaboratorAddress)),
+                    keccak256(abi.encodePacked(collaboratorAmount)),
+                    keccak256(bytes(collectionId)),
+                    tokenType,
+                    keccak256(bytes(uri))
+                )
+            );
+    }
+
+
+// Functions to accept offer on nft
+        function acceptOffer(
+        OfferItemParams memory params
+    ) 
+        external nonReentrant {
+
+        require(isCancelled[params.signature[0]]== false, "This offer is expired");
+        require(params.offeredTo == msg.sender,"This Nft is reserved for specific person.");
+        bytes32 eip712DomainHash = geteip712DomainHash ();
+        bytes32 hashStruct = gethashStructOffer(params.offeredBy,params.erc721,params.tokenId,params.price,params.endTime,params.collaboratorAddress,params.collaboratorAmount,params.collectionId,params.tokenType,params.uri);
+         if(byPass == false){
+        require(verifySignature(params.signature[0],hashStruct,eip712DomainHash) == params.offeredBy,"Offerer signature not Verified");
+        require(verifySignature(params.signature[1],hashStruct,eip712DomainHash) == signerWallet,"System signature not Verified");
+         }
+        transfers(params.offeredBy,params.price,currencyAddress,params.collaboratorAddress,params.collaboratorAmount);
+ 
+        if (params.tokenType == 0){
+        MintingContract.safeMint(params.offeredBy,params.uri);
+        }
+        else{
+           require(IERC721(params.erc721).ownerOf(params.tokenId)== params.offeredTo,
+            "Seller is not the owner of this NFT"
+        );
+        IERC721(params.erc721).transferFrom(msg.sender,params.offeredBy,params.tokenId);
+        }
+        isCancelled[params.signature[0]]= true;
+        
+        emit Bought(
+        params.tokenId,
+        params.offeredBy,
+        params.price,
+        params.collectionId);
+
+    }
+
+/**
+ * @notice Transfers funds from the buyer to the seller and collaborators and market owner
+ * @param offeredBy The address that offered to buy nft
+ * @param price The total price of the NFT
+ * @param erc20 The address of the ERC20 contract used for payment
+ * @param collaboratorAddress The addresses of collaborators who receive a portion of the payment
+ * @param collaboratorAmount The corresponding amounts to be sent to the collaborators
+ */
+        function transfers ( address offeredBy,uint256 price, address erc20 ,  address[] memory collaboratorAddress,
+        uint256[] memory collaboratorAmount)
+        private 
+    {   
+         uint256 fee = ((price*listingPercent)/100)/10;
+         
+         uint256 totalColab=0;
+        for (uint i=0; i<collaboratorAddress.length; i++) {  
+             totalColab= totalColab + collaboratorAmount[i] ;
+             }
+
+
+        // Transfer to collaborators
+        for (uint i=0; i<collaboratorAddress.length; i++) {  
+        require(
+            IERC20(erc20).transferFrom(
+                offeredBy,  
+                collaboratorAddress[i], 
+                collaboratorAmount[i]   
+            ),
+            "Failed to transfer listing fee to Collaborators"
+        );
+           }
+
+        // Transfer to seller
+        require(
+            IERC20(erc20).transferFrom(
+                offeredBy,                  
+                msg.sender, // OfferedTo | Offer Accepter
+                price-fee-totalColab
+            ),
+            "Failed to transfer money to the seller"
+        );
+
+        // Listing fee from buyer to escrow
+        require(
+            IERC20(erc20).transferFrom(
+                offeredBy,  
+                escrow, 
+                fee
+            ),
+            "Failed to transfer listing fee to escrow"
+        );
+
+    } 
+/**
+ * @notice Verifies the provided signature using the given hash and domain
+ * @param signature The signature to be verified
+ * @param hashStruct The hash struct representing the listing parameters
+ * @param domain The EIP712 domain hash
+ * @return The address recovered from the signature
+ */
+        function verifySignature(bytes memory signature, bytes32 hashStruct, bytes32 domain) public pure returns (address){
+        bytes32 r;
+        bytes32 s;
+        uint8 v;
+
+        require(signature.length == 65, "Invalid signature");
+
+        assembly {
+            r := mload(add(signature, 32))
+            s := mload(add(signature, 64))
+            v := byte(0,mload(add(signature, 96)))
+        }
+              
+              if (v < 27) {
+                v += 27;
+                }
+    if (v != 27 && v != 28) {
+        return address(0);
+    }
+
+    bytes32 hash = keccak256(abi.encodePacked("\x19\x01", domain, hashStruct));
+
+    return ecrecover(hash, v, r, s);
+        }
+
+}
+
